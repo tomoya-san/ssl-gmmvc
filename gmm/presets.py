@@ -14,10 +14,14 @@ from .estimator import JointGMM
 
 
 class FullJointGMMGPU(JointGMM):
-    """Full joint covariance, PyTorch backend (CUDA or CPU tensors)."""
+    """Full joint covariance, PyTorch backend on CUDA.
 
-    def __init__(self, n_components, device="cuda", verbose=1):
-        super().__init__(FullCovariance(n_components), TorchBackend(device), verbose)
+    Raises ``RuntimeError`` at construction if no CUDA device is available; use
+    :class:`FullJointGMMCPU` for CPU.
+    """
+
+    def __init__(self, n_components, verbose=1):
+        super().__init__(FullCovariance(n_components), TorchBackend("cuda"), verbose)
 
 
 class FullJointGMMCPU(JointGMM):
@@ -38,10 +42,14 @@ class FullJointGMMCPU(JointGMM):
 
 
 class CrossDiagJointGMMGPU(JointGMM):
-    """Cross-diagonal joint covariance, PyTorch backend (CUDA or CPU tensors)."""
+    """Cross-diagonal joint covariance, PyTorch backend on CUDA.
 
-    def __init__(self, n_components=1, device="cuda", verbose=1):
-        super().__init__(CrossDiagCovariance(n_components), TorchBackend(device), verbose)
+    Raises ``RuntimeError`` at construction if no CUDA device is available; use
+    :class:`CrossDiagJointGMMCPU` for CPU.
+    """
+
+    def __init__(self, n_components=1, verbose=1):
+        super().__init__(CrossDiagCovariance(n_components), TorchBackend("cuda"), verbose)
 
 
 class CrossDiagJointGMMCPU(JointGMM):

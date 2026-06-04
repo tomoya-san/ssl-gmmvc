@@ -196,6 +196,14 @@ class TorchBackend(Backend):
     name = "torch"
 
     def __init__(self, device="cuda"):
+        # A CUDA device was requested but none is available: fail loudly rather
+        # than silently running on CPU (the CPU presets exist for that).
+        if torch.device(device).type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                f"TorchBackend requested CUDA device {device!r} but no CUDA "
+                "device is available. Use a CPU preset (FullJointGMMCPU / "
+                "CrossDiagJointGMMCPU) instead."
+            )
         self.device = device
 
     def asarray(self, x):

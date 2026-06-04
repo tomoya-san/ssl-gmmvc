@@ -8,7 +8,7 @@ cross-diagonal) and array backend (NumPy vs PyTorch)::
         CrossDiagJointGMMGPU, CrossDiagJointGMMCPU,
     )
 
-    model = CrossDiagJointGMMGPU(n_components=64, device="cuda")
+    model = CrossDiagJointGMMGPU(n_components=64)   # CUDA; raises if unavailable
     model.fit(XY)                     # XY = concatenated [source | target]
     Y_hat = model.convert(X)          # map source -> target
     resp  = model.predict_responsibilities(X)
