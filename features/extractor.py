@@ -18,19 +18,10 @@ import torch
 import torchaudio
 import torchaudio.functional as AF
 
+from common.device import resolve_device
+
 # WavLM (and the knn-vc checkpoint) are trained on 16 kHz audio.
 WAVLM_SAMPLE_RATE = 16000
-
-
-def resolve_device(device: str | None = None) -> torch.device:
-    """Resolve a device spec to a concrete :class:`torch.device`.
-
-    ``None`` auto-selects CUDA when available and falls back to CPU, so the same
-    code path serves both backends.
-    """
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    return torch.device(device)
 
 
 class FeatureExtractor:

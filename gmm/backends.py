@@ -17,6 +17,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from common.device import resolve_device
+
 EPSILON = 1e-6
 
 
@@ -196,15 +198,10 @@ class TorchBackend(Backend):
     name = "torch"
 
     def __init__(self, device="cuda"):
-        # A CUDA device was requested but none is available: fail loudly rather
-        # than silently running on CPU (the CPU presets exist for that).
-        if torch.device(device).type == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError(
-                f"TorchBackend requested CUDA device {device!r} but no CUDA "
-                "device is available. Use a CPU preset (FullJointGMMCPU / "
-                "CrossDiagJointGMMCPU) instead."
-            )
-        self.device = device
+        # GPU presets mean GPU: require_cuda=True raises (rather than silently
+        # running on CPU) when CUDA is unavailable. The CPU presets exist for
+        # CPU work; pass device="cpu" for torch-on-CPU directly.
+        self.device = resolve_device(device, require_cuda=True)
 
     def asarray(self, x):
         if isinstance(x, np.ndarray):
