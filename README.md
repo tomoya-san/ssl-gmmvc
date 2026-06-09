@@ -53,8 +53,10 @@ WIP
 
 <summary>Click to expand</summary>
 
-The joint GMM is factored along two **independent** axes — *what* math
-(covariance structure) and *how* it computes (array backend) — joined by a single
+### Interface Design
+
+The joint GMM is factored along two **independent** axes: *what* math
+(covariance structure) and *how* it computes (array backend). This is joined by a single
 EM driver that depends on neither. The presets just pin one cell of the grid.
 
 ```mermaid
@@ -92,8 +94,8 @@ flowchart TB
     Driver -->|self.b| BackBase
 ```
 
-**Extending is a single, local change**
-variants:
+### Benefits
+Extending is a single, local change!
 
 ```mermaid
 flowchart LR
@@ -111,6 +113,7 @@ flowchart LR
         b3["<b>every</b> covariance model<br/>gets it for free"]
         b1 --> b2 --> b3
     end
+    A ~~~ B
 ```
 
 </details>
