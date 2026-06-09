@@ -31,7 +31,7 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
 > **Note:** The project pins CPython 3.10.18 (see `.python-version`). If that
 > interpreter isn't already installed, `uv sync` will automatically download a
-> standalone CPython 3.10.18 build into uv's managed cache and use it — you don't
+> standalone CPython 3.10.18 build into uv's managed cache and use it. You don't
 > need to install Python yourself.
 
 > **⚠️ GPU:** `torch`/`torchaudio` are pinned to **2.8.0+cu128** (CUDA 12.8) for
