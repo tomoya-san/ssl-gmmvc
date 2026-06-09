@@ -7,14 +7,9 @@ cosine space -- the natural geometry for WavLM features -- via :func:`torch.topk
 on a full distance matrix, so it runs on whatever device the features already
 live on (GPU when available).
 
-Two policies are provided:
-
-* :func:`asymmetric_matching` -- *source -> target* only. Every source frame is
-  kept and paired with its ``k`` nearest targets, so the output preserves (and
-  ``k``-fold repeats) the full source sequence.
-* :func:`symmetric_matching` -- *source -> target* **and** *target -> source*,
-  with duplicate pairs removed. This adds target frames that no source picked but
-  that picked a source, giving more balanced coverage of both sequences.
+:func:`symmetric_matching` matches *source -> target* **and** *target -> source*,
+with duplicate pairs removed. This adds target frames that no source picked but
+that picked a source, giving more balanced coverage of both sequences.
 """
 
 from __future__ import annotations
