@@ -12,6 +12,7 @@ self-supervised speech model: a lightweight, interpretable converter
 (the conversion is just a locally linear transform)
 on top of modern features. Old idea, new space.
 
+
 ## Setup
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
@@ -43,7 +44,75 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
 WIP
 
+## Code Design
+
+<details>
+
+<summary>Click to expand</summary>
+
+The joint GMM is factored along two **independent** axes — *what* math
+(covariance structure) and *how* it computes (array backend) — joined by a single
+EM driver that depends on neither. The presets just pin one cell of the grid.
+
+```mermaid
+flowchart TB
+    subgraph Presets["gmm/presets.py — pin one (structure × backend) cell"]
+        direction LR
+        P1[FullJointGMMGPU]
+        P2[FullJointGMMCPU]
+        P3[CrossDiagJointGMMGPU]
+        P4[CrossDiagJointGMMCPU]
+    end
+
+    Driver["<b>JointGMM</b> — gmm/estimator.py<br/>EM loop · convergence · reporting · persistence<br/><i>structure- & backend-agnostic</i>"]
+
+    subgraph Cov["Axis 1 · WHAT math — gmm/covariance.py"]
+        direction TB
+        CovBase[["CovarianceModel (interface)<br/>e_step · m_step · source_log_prob · conditional_mean"]]
+        Full[FullCovariance]
+        Cross[CrossDiagCovariance]
+        CovBase -.implemented by.-> Full
+        CovBase -.implemented by.-> Cross
+    end
+
+    subgraph Back["Axis 2 · HOW it computes — gmm/backends.py"]
+        direction TB
+        BackBase[["Backend (interface)<br/>elementwise · reductions · einsum · inv/slogdet/Cholesky"]]
+        Numpy["NumpyBackend (CPU)"]
+        Torch["TorchBackend (CPU/GPU)"]
+        BackBase -.implemented by.-> Numpy
+        BackBase -.implemented by.-> Torch
+    end
+
+    Presets ==> Driver
+    Driver -->|self.cov| CovBase
+    Driver -->|self.b| BackBase
+```
+
+**Extending is a single, local change**
+variants:
+
+```mermaid
+flowchart LR
+    subgraph A["➕ New covariance constraint"]
+        direction TB
+        a1["e.g. SharedCovariance<br/>(tied / diagonal / low-rank)"]
+        a2["one CovarianceModel subclass<br/>(written via the Backend interface)"]
+        a3["runs on <b>every</b> backend<br/>CPU + GPU, unchanged"]
+        a1 --> a2 --> a3
+    end
+    subgraph B["➕ New backend"]
+        direction TB
+        b1["e.g. CuPy · JAX · MLX · Dask"]
+        b2["one Backend subclass"]
+        b3["<b>every</b> covariance model<br/>gets it for free"]
+        b1 --> b2 --> b3
+    end
+```
+
+</details>
+
 ## Acknowledgements
-Parts of code for this project are adapted from [kNN-VC](https://github.com/bshall/knn-vc).
+Parts of code for this project are adapted from [kNN-VC](https://github.com/bshall/knn-vc) and [LinearVC](https://github.com/kamperh/linearvc).
 
 Many thanks to the authors for releasing their work.
