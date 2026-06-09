@@ -9,6 +9,21 @@ dependencies = [
     "numpy>=2.2.6",
     "scikit-learn>=1.7.2",
     "scipy>=1.15.3",
-    "torch>=2.12.0",
-    "torchaudio>=2.11.0",
+    # torchaudio is capped at <2.9 because kNN-VC (loaded via torch.hub) imports
+    # torchaudio.sox_effects, which was removed in torchaudio 2.9. torch is pinned
+    # to the matching 2.8.x release.
+    "torch>=2.8,<2.9",
+    "torchaudio>=2.8,<2.9",
 ]
+
+# Pin CUDA 12.8 torch/torchaudio wheels. The default PyPI build resolves to a
+# cu13x wheel, which requires NVIDIA driver >=580; this box runs driver 570
+# (CUDA 12.8), so we pull from PyTorch's cu128 index instead.
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

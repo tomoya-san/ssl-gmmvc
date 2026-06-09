@@ -33,6 +33,12 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 > standalone CPython 3.10.18 build into uv's managed cache and use it — you don't
 > need to install Python yourself.
 
+> **⚠️ GPU:** `torch`/`torchaudio` are pinned to **2.8.0+cu128** (CUDA 12.8) for
+> the dev machine (RTX A6000, driver 570.x); a CUDA-capable GPU is required.
+> `torchaudio` is also held `<2.9` because kNN-VC imports `torchaudio.sox_effects`,
+> removed in 2.9. For a different CUDA/driver, adjust the torch index in
+> `pyproject.toml` and re-sync.
+
 ## Demo
 
 WIP
