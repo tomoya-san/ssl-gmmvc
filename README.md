@@ -1,7 +1,7 @@
 # SSL-GMMVC: Interpretable Voice Conversion via Locally Linear GMM Transforms in Self-Supervised Representation Space
 Accepted at Interspeech2026
 
-[![paper](https://img.shields.io/badge/Paper-arXiv-red.svg)](https://drive.google.com/file/d/1IQqzwPr3-0H4QyMpHW_m2UDckdGKOt8S/view?usp=sharing)
+[![paper](https://img.shields.io/badge/Paper-arXiv-red.svg)](http://arxiv.org/abs/2606.10317)
 
 ## GMMs are back!
 
