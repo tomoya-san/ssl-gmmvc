@@ -313,3 +313,96 @@ class CrossDiagCovariance(CovarianceModel):
         gain = self.cross_covariances_ / b.clamp_min(var_x)        # (k, d)
         diff = X[:, None, :] - mu_x[None, :, :]
         return mu_y[None, :, :] + gain[None, :, :] * diff
+
+
+# ---------------------------------------------------------------------------
+class SharedCovariance(CovarianceModel):
+    """Dense joint covariance *tied* (shared) across all components.
+
+    Stores ``means_`` (k, 2d) and ``weights_`` (k,) per component, but a single
+    ``covariance_`` (2d, 2d) shared by every component. The conditional map
+    ``A = Sigma_yx Sigma_xx^{-1}`` is therefore one global matrix::
+
+        E[y | x, k] = mu_y_k + A (x - mu_x_k)
+
+    so conversion is a global affine map modulated only by the per-component
+    mean offsets. This is the classic tied-covariance EV-GMM: far fewer
+    parameters than :class:`FullCovariance` (one 2d x 2d matrix instead of k),
+    which helps when per-speaker adaptation data is scarce. Inverting and taking
+    the log-determinant of that one matrix once per step also makes it cheaper
+    than the k-batched Cholesky solve :class:`FullCovariance` runs.
+    """
+
+    PARAM_NAMES = ("means", "weights", "covariance")
+
+    def _reg(self, b, dim):
+        return EPSILON * b.eye(dim)
+
+    def _init_covariances(self, b, joint, labels, Nk_safe):
+        # Pooled within-cluster scatter of the k-means init, tied over clusters:
+        # (sum_n z z^T - sum_k Nk mu_k mu_k^T) / N. PSD by construction, then
+        # regularized to stay positive-definite.
+        n = joint.shape[0]
+        gram = b.einsum("ni,nj->ij", joint, joint)                   # (2d, 2d)
+        mean_outer = b.einsum("k,ki,kj->ij", Nk_safe, self.means_, self.means_)
+        cov = (gram - mean_outer) / n
+        self.covariance_ = cov + self._reg(b, cov.shape[-1])
+
+    def _reinit_clusters(self, b, joint, empty):
+        # Only the means are per-component; the covariance is shared, so empty
+        # clusters just take the global mean.
+        global_mean = joint.mean(axis=0)
+        for k in empty:
+            self.means_[k] = global_mean
+
+    def e_step(self, b, joint):
+        n, d = joint.shape
+        cov = self.covariance_ + self._reg(b, d)
+        inv_cov = b.inv(cov)                                         # (2d, 2d)
+        log_det = b.slogdet(cov)                                     # scalar
+
+        diff = joint[:, None, :] - self.means_[None, :, :]           # (n, k, 2d)
+        temp = b.einsum("nkf,fg->nkg", diff, inv_cov)
+        mahal = b.einsum("nkf,nkf->nk", temp, diff)                  # (n, k)
+
+        log_prob = -0.5 * (mahal + log_det + d * np.log(2 * np.pi))
+        weighted = log_prob + b.log(self.weights_ + EPSILON)[None, :]
+
+        ll = b.logsumexp(weighted, axis=1)
+        resp = b.exp(weighted - ll[:, None])
+        return resp, ll.sum()
+
+    def m_step(self, b, joint, resp):
+        n = joint.shape[0]
+        Nk = resp.sum(axis=0) + EPSILON                             # (k,)
+
+        self.weights_ = Nk / n
+        self.means_ = b.einsum("nk,nf->kf", resp, joint) / Nk[:, None]
+
+        # Tied ML covariance: (1/N) sum_n sum_k resp[n,k] (z-mu_k)(z-mu_k)^T.
+        diff = joint[:, None, :] - self.means_[None, :, :]          # (n, k, 2d)
+        weighted_diff = diff * (resp ** 0.5)[:, :, None]
+        cov = b.einsum("nkf,nkg->fg", weighted_diff, weighted_diff) / n
+        self.covariance_ = cov + self._reg(b, cov.shape[-1])
+
+    def source_log_prob(self, b, X):
+        d = self.feature_dim
+        mu_x, _ = self._split(self.means_)
+        reg_cov = self.covariance_[:d, :d] + self._reg(b, d)
+        inv_cov = b.inv(reg_cov)
+        log_det = b.slogdet(reg_cov)
+
+        diff = X[:, None, :] - mu_x[None, :, :]                      # (n, k, d)
+        temp = b.einsum("nkf,fg->nkg", diff, inv_cov)
+        mahal = b.einsum("nkf,nkf->nk", temp, diff)
+        return -0.5 * (mahal + log_det + d * np.log(2 * np.pi))
+
+    def conditional_mean(self, b, X):
+        d = self.feature_dim
+        mu_x, mu_y = self._split(self.means_)
+        cov_xx = self.covariance_[:d, :d]
+        cov_yx = self.covariance_[d:, :d]
+        A = cov_yx @ b.inv(cov_xx + self._reg(b, d))                 # (d, d), global
+
+        diff = X[:, None, :] - mu_x[None, :, :]                      # (n, k, d)
+        return mu_y[None, :, :] + b.einsum("nkf,gf->nkg", diff, A)

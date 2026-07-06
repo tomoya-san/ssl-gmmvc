@@ -9,7 +9,7 @@ imports (``from gmm import FullJointGMMGPU`` etc.) keep working.
 from __future__ import annotations
 
 from .backends import NUMPY, TorchBackend
-from .covariance import CrossDiagCovariance, FullCovariance
+from .covariance import CrossDiagCovariance, FullCovariance, SharedCovariance
 from .estimator import JointGMM
 
 
@@ -57,3 +57,21 @@ class CrossDiagJointGMMCPU(JointGMM):
 
     def __init__(self, n_components=1, verbose=1):
         super().__init__(CrossDiagCovariance(n_components), NUMPY, verbose)
+
+
+class SharedJointGMMGPU(JointGMM):
+    """Shared (tied) joint covariance, PyTorch backend on CUDA.
+
+    Raises ``RuntimeError`` at construction if no CUDA device is available; use
+    :class:`SharedJointGMMCPU` for CPU.
+    """
+
+    def __init__(self, n_components=1, verbose=1):
+        super().__init__(SharedCovariance(n_components), TorchBackend("cuda"), verbose)
+
+
+class SharedJointGMMCPU(JointGMM):
+    """Shared (tied) joint covariance, NumPy backend."""
+
+    def __init__(self, n_components=1, verbose=1):
+        super().__init__(SharedCovariance(n_components), NUMPY, verbose)

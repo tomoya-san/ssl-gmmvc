@@ -67,6 +67,8 @@ flowchart TB
         P2[FullJointGMMCPU]
         P3[CrossDiagJointGMMGPU]
         P4[CrossDiagJointGMMCPU]
+        P5[SharedJointGMMGPU]
+        P6[SharedJointGMMCPU]
     end
 
     Driver["<b>JointGMM</b> — gmm/estimator.py<br/>EM loop · convergence · reporting · persistence<br/><i>structure- & backend-agnostic</i>"]
@@ -76,8 +78,10 @@ flowchart TB
         CovBase[["CovarianceModel (interface)<br/>e_step · m_step · source_log_prob · conditional_mean"]]
         Full[FullCovariance]
         Cross[CrossDiagCovariance]
+        Shared[SharedCovariance]
         CovBase -.implemented by.-> Full
         CovBase -.implemented by.-> Cross
+        CovBase -.implemented by.-> Shared
     end
 
     subgraph Back["Axis 2 · HOW it computes — gmm/backends.py"]
@@ -101,7 +105,7 @@ Extending is a single, local change!
 flowchart LR
     subgraph A["➕ New covariance constraint"]
         direction TB
-        a1["e.g. SharedCovariance<br/>(tied / diagonal / low-rank)"]
+        a1["e.g. LowRankCovariance<br/>(low-rank + diagonal)"]
         a2["one CovarianceModel subclass<br/>(written via the Backend interface)"]
         a3["runs on <b>every</b> backend<br/>CPU + GPU, unchanged"]
         a1 --> a2 --> a3

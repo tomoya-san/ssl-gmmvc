@@ -1,11 +1,12 @@
 """Joint Gaussian Mixture Models for voice conversion.
 
-Four presets span two orthogonal axes -- covariance structure (full vs
-cross-diagonal) and array backend (NumPy vs PyTorch)::
+Six presets span two orthogonal axes -- covariance structure (full,
+cross-diagonal or shared/tied) and array backend (NumPy vs PyTorch)::
 
     from gmm import (
         FullJointGMMGPU, FullJointGMMCPU,
         CrossDiagJointGMMGPU, CrossDiagJointGMMCPU,
+        SharedJointGMMGPU, SharedJointGMMCPU,
     )
 
     model = CrossDiagJointGMMGPU(n_components=64)   # CUDA; raises if unavailable
@@ -21,13 +22,20 @@ For custom combinations, compose the pieces directly::
 """
 
 from .backends import Backend, NumpyBackend, TorchBackend, NUMPY
-from .covariance import CovarianceModel, CrossDiagCovariance, FullCovariance
+from .covariance import (
+    CovarianceModel,
+    CrossDiagCovariance,
+    FullCovariance,
+    SharedCovariance,
+)
 from .estimator import JointGMM
 from .presets import (
     CrossDiagJointGMMCPU,
     CrossDiagJointGMMGPU,
     FullJointGMMCPU,
     FullJointGMMGPU,
+    SharedJointGMMCPU,
+    SharedJointGMMGPU,
 )
 
 __all__ = [
@@ -36,11 +44,14 @@ __all__ = [
     "FullJointGMMCPU",
     "CrossDiagJointGMMGPU",
     "CrossDiagJointGMMCPU",
+    "SharedJointGMMGPU",
+    "SharedJointGMMCPU",
     # composable building blocks
     "JointGMM",
     "CovarianceModel",
     "FullCovariance",
     "CrossDiagCovariance",
+    "SharedCovariance",
     "Backend",
     "NumpyBackend",
     "TorchBackend",
