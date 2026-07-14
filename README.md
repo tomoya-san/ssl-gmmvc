@@ -7,7 +7,7 @@ Accepted at Interspeech2026
 
 This repo contains code for **SSL-GMMVC**, our proposed voice conversion method from "SSL-GMMVC: Interpretable Voice Conversion via Locally Linear GMM Transforms in Self-Supervised Representation Space."
 
-![SSL-GMMVC](assets/ssl-gmmvc.png)
+[![SSL-GMMVC](https://img.youtube.com/vi/GeHhOIzt8Q0/maxresdefault.jpg)](https://youtu.be/GeHhOIzt8Q0)
 
 GMM mapping was the workhorse of voice conversion in the 2000s, before deep models took over.
 **SSL-GMMVC** revives it in the representation space of a
