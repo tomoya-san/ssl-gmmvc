@@ -11,6 +11,7 @@ cross-diagonal or shared/tied) and array backend (NumPy vs PyTorch)::
 
     model = CrossDiagJointGMMGPU(n_components=64)   # CUDA; raises if unavailable
     model.fit(XY)                     # XY = concatenated [source | target]
+    model.fit(XY, chunk_size=10_000)  # same result, memory bounded by the chunk
     Y_hat = model.convert(X)          # map source -> target
     resp  = model.predict_responsibilities(X)
     model.save_model("model.npz")

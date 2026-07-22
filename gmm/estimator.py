@@ -22,6 +22,8 @@ import warnings
 
 import numpy as np
 
+from .chunking import as_chunked, subsample_for_init
+
 
 class JointGMM:
     """Joint-density GMM for source -> target feature conversion.
@@ -59,53 +61,80 @@ class JointGMM:
         return self.cov.means_
 
     # -- EM driver ---------------------------------------------------------
-    def fit(self, XY, max_iter=100, tol=1e-6, log_likelihood_file=None):
+    def fit(self, XY, max_iter=100, tol=1e-6, log_likelihood_file=None,
+            chunk_size=None, init_sample_cap=100_000):
         """Fit with EM on the concatenated source/target data.
 
         Parameters
         ----------
-        XY : array-like of shape (n_samples, 2 * feature_dim)
-            Concatenated ``[source | target]`` features (numpy or tensor).
+        XY : array-like of shape (n_samples, 2 * feature_dim), or callable
+            Concatenated ``[source | target]`` features. Either an in-memory
+            array/tensor, or -- for out-of-core data -- a zero-argument callable
+            returning a fresh iterator of row-blocks (replayed once per EM
+            iteration). See :mod:`gmm.chunking`.
         max_iter, tol : EM iteration cap and relative-rise convergence tolerance.
         log_likelihood_file : optional path for the per-sample LL history (CSV).
+        chunk_size : int or None
+            Rows per E-step chunk when ``XY`` is an in-memory array. ``None``
+            (default) processes the whole array at once -- identical to the
+            classic full-batch EM. Set it to bound peak memory: the E-step
+            transient then scales with ``chunk_size`` instead of ``n_samples``,
+            at no cost in accuracy (the update is exact, not stochastic).
+        init_sample_cap : int
+            Cap on the rows drawn to seed k-means++ when chunking or streaming,
+            so initialization does not re-materialize the whole dataset.
 
         Returns
         -------
         self
         """
         b = self.b
-        joint = b.asarray(XY)
-        n_samples = joint.shape[0]
+        source = as_chunked(XY, chunk_size)
+        streaming = source.is_callable or chunk_size is not None
 
         if self.verbose > 0:
+            n_str = source.n_samples if source.n_samples is not None else "streaming"
             print(f"Starting {type(self).__name__} fitting with {self.n_components} components")
-            print(f"Data shape: {n_samples} samples, {joint.shape[1]} features")
+            print(f"Data: {n_str} samples, chunk_size={chunk_size}")
             print(f"Backend: {b.name}")
             print("-" * 50)
 
-        self.cov.initialize(b, joint, self.verbose)
+        # k-means++ is multi-pass and forms its own (n, k, d) intermediates, so
+        # seed it from a bounded sample when the point is to avoid a full load.
+        if streaming:
+            init_data = subsample_for_init(source, b, init_sample_cap)
+        else:
+            init_data = b.asarray(XY)
+        self.cov.initialize(b, init_data, self.verbose)
+        del init_data
 
         prev_ll = float("-inf")
         ll_history = []
         converged = invalid = False
         rise_rate = None
         ll_per_sample = float("nan")
+        n_samples = source.n_samples or 0
 
         for it in range(max_iter):
             try:
-                resp, log_likelihood = self.cov.e_step(b, joint)
-                if not b.isfinite_all(resp):
+                # One full sweep: accumulate this iteration's sufficient statistics.
+                stats = self.cov.new_stats(b)
+                for chunk in source:
+                    self.cov.accumulate(b, b.asarray(chunk), stats)
+
+                n_samples = stats["n"]
+                if not (b.isfinite_all(stats["Nk"]) and b.isfinite_all(stats["dS1"])):
                     invalid = self._warn("responsibilities", it)
                     break
 
-                self.cov.m_step(b, joint, resp)
-                if self._invalid_parameters():
-                    invalid = True
-                    break
-
-                log_likelihood = float(log_likelihood)
+                log_likelihood = float(stats["ll"])
                 if not np.isfinite(log_likelihood):
                     invalid = self._warn("log-likelihood", it)
+                    break
+
+                self.cov.update_from_stats(b, stats)
+                if self._invalid_parameters():
+                    invalid = True
                     break
 
                 ll_per_sample = log_likelihood / n_samples

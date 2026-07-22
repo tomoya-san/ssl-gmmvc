@@ -4,11 +4,17 @@ A :class:`CovarianceModel` owns the distribution parameters (means, weights and
 the structure-specific covariance terms) and implements the math that depends on
 the covariance structure:
 
-* ``initialize``        : k-means init of all parameters from the joint data.
-* ``e_step``            : responsibilities + total log-likelihood.
-* ``m_step``            : closed-form parameter update.
-* ``source_log_prob``   : log p(x | k) under the source marginal (for p(k | x)).
-* ``conditional_mean``  : E[y | x, k], the per-component linear map.
+* ``initialize``          : k-means init of all parameters from the joint data.
+* ``new_stats`` /
+  ``accumulate`` /
+  ``update_from_stats``   : one EM iteration expressed as chunk-wise
+                            accumulation of additive sufficient statistics
+                            followed by a single closed-form parameter update.
+                            Feeding the whole array as one chunk reproduces the
+                            classic full-batch E- and M-steps exactly; feeding it
+                            in row-chunks bounds peak memory (see ``gmm.estimator``).
+* ``source_log_prob``     : log p(x | k) under the source marginal (for p(k | x)).
+* ``conditional_mean``    : E[y | x, k], the per-component linear map.
 * ``named_params`` / ``load_named_params`` : persistence + validation.
 
 Everything is expressed through a :class:`~gmm.backends.Backend`, so each model
@@ -82,11 +88,40 @@ class CovarianceModel:
         d = self.feature_dim
         return vec[..., :d], vec[..., d:]
 
-    # -- math interface (implemented by subclasses) ------------------------
-    def e_step(self, b, joint):
+    # -- streaming EM interface (implemented by subclasses) ----------------
+    def new_stats(self, b):
+        """Return zeroed sufficient-statistic accumulators for one EM sweep.
+
+        A plain dict of backend arrays plus the running row count ``n`` and the
+        log-likelihood ``ll`` (a float64 Python scalar so the convergence test
+        stays meaningful when summed over many samples).
+        """
         raise NotImplementedError
 
-    def m_step(self, b, joint, resp):
+    def accumulate(self, b, chunk, stats):
+        """E-step for one row-chunk: fold its statistics into ``stats`` in place.
+
+        Computes the chunk's responsibilities and adds its row count,
+        log-likelihood and the additive sufficient statistics. The per-sample
+        responsibilities are never retained past the chunk, so peak memory scales
+        with the chunk size rather than the full sample count.
+        """
+        raise NotImplementedError
+
+    def _joint_mahalanobis(self, b, joint):
+        """Per-component joint Gaussian terms ``(mahal, log_det, diff)``.
+
+        ``mahal`` (n, k) is the squared Mahalanobis distance of each row under
+        every component's joint ``[x, y]`` covariance, ``log_det`` (k,) -- or a
+        scalar for a tied covariance -- the matching log-determinant, and ``diff``
+        (n, k, 2d) the centered rows (returned so callers reuse it for sufficient
+        statistics). This is the only structure-specific part of the joint
+        E-step; :meth:`e_step` and :meth:`accumulate` share everything else.
+        """
+        raise NotImplementedError
+
+    def update_from_stats(self, b, stats):
+        """M-step: set the parameters from fully accumulated ``stats``."""
         raise NotImplementedError
 
     def source_log_prob(self, b, X):
@@ -124,6 +159,32 @@ class CovarianceModel:
         cond = self.conditional_mean(b, X)                  # (n, k, d)
         return (resp[:, :, None] * cond).sum(axis=1)
 
+    def _responsibilities_and_ll(self, b, mahal, log_det, joint_dim):
+        """Joint posteriors and per-row log-likelihood from ``(mahal, log_det)``.
+
+        Shared tail of the joint E-step: adds the Gaussian normaliser and mixture
+        weights, then normalises. ``log_det`` may be ``(k,)`` (per-component) or a
+        scalar (tied covariance); both broadcast against ``mahal`` (n, k) on the
+        trailing axis. Returns ``(resp (n, k), ll (n,))``.
+        """
+        log_prob = -0.5 * (mahal + log_det + joint_dim * np.log(2 * np.pi))
+        weighted = log_prob + b.log(self.weights_ + EPSILON)[None, :]
+        ll = b.logsumexp(weighted, axis=1)                  # (n,)
+        resp = b.exp(weighted - ll[:, None])                # (n, k)
+        return resp, ll
+
+    def e_step(self, b, joint):
+        """In-memory joint E-step over ``joint`` (n, 2d): ``(resp, ll_sum)``.
+
+        Posteriors ``p(k | x, y)`` under the current joint means/covariances and
+        the summed log-likelihood. Unlike :meth:`accumulate`, this materialises
+        the full ``(n, k)`` responsibilities at once, which suits small in-memory
+        data (e.g. per-speaker target-dependent adaptation) that needs no chunking.
+        """
+        mahal, log_det, _ = self._joint_mahalanobis(b, joint)
+        resp, ll = self._responsibilities_and_ll(b, mahal, log_det, joint.shape[1])
+        return resp, ll.sum()
+
 
 # ---------------------------------------------------------------------------
 class FullCovariance(CovarianceModel):
@@ -156,29 +217,43 @@ class FullCovariance(CovarianceModel):
     def _reg(self, b, dim):
         return EPSILON * b.eye(dim)[None, :, :]
 
-    def e_step(self, b, joint):
-        n, d = joint.shape
-        diff = joint[:, None, :] - self.means_[None, :, :]            # (n, k, 2d)
-        cov = self.covariances_ + self._reg(b, d)
-        mahal, log_det = b.cholesky_solve_mahalanobis(cov, diff)      # (n, k), (k,)
+    def new_stats(self, b):
+        k, d2 = self.n_components, 2 * self.feature_dim
+        return {"n": 0, "ll": 0.0,
+                "Nk": b.zeros(k),               # sum_n resp                    (k,)
+                "dS1": b.zeros((k, d2)),        # sum_n resp (z - mu)           (k, 2d)
+                "dS2": b.zeros((k, d2, d2))}    # sum_n resp (z-mu)(z-mu)^T     (k, 2d, 2d)
 
-        log_prob = -0.5 * (mahal + log_det[None, :] + d * np.log(2 * np.pi))
-        weighted = log_prob + b.log(self.weights_ + EPSILON)[None, :]
-
-        ll = b.logsumexp(weighted, axis=1)                           # (n,)
-        resp = b.exp(weighted - ll[:, None])                         # (n, k)
-        return resp, ll.sum()
-
-    def m_step(self, b, joint, resp):
-        n = joint.shape[0]
-        Nk = resp.sum(axis=0) + EPSILON                              # (k,)
-
-        self.weights_ = Nk / n
-        self.means_ = b.einsum("nk,nf->kf", resp, joint) / Nk[:, None]
-
+    def _joint_mahalanobis(self, b, joint):
         diff = joint[:, None, :] - self.means_[None, :, :]           # (n, k, 2d)
-        weighted_diff = diff * (resp ** 0.5)[:, :, None]
-        covs = b.einsum("nkf,nkg->kfg", weighted_diff, weighted_diff) / Nk[:, None, None]
+        cov = self.covariances_ + self._reg(b, joint.shape[1])
+        mahal, log_det = b.cholesky_solve_mahalanobis(cov, diff)     # (n, k), (k,)
+        return mahal, log_det, diff
+
+    def accumulate(self, b, chunk, stats):
+        n, d = chunk.shape
+        mahal, log_det, diff = self._joint_mahalanobis(b, chunk)
+        resp, ll = self._responsibilities_and_ll(b, mahal, log_det, d)
+
+        # Moments centered on the current means (reusing diff): the sums stay
+        # well-scaled, so the covariance update has no large-number cancellation.
+        dw = diff * (resp ** 0.5)[:, :, None]                       # (n, k, 2d)
+        stats["n"] += n
+        stats["ll"] += float(ll.sum())
+        stats["Nk"] += resp.sum(axis=0)
+        stats["dS1"] += b.einsum("nk,nkf->kf", resp, diff)
+        stats["dS2"] += b.einsum("nkf,nkg->kfg", dw, dw)
+
+    def update_from_stats(self, b, stats):
+        Nk = stats["Nk"] + EPSILON                                  # (k,)
+        self.weights_ = Nk / stats["n"]
+        shift = stats["dS1"] / Nk[:, None]                          # (k, 2d): mu_new - mu_old
+        self.means_ = self.means_ + shift
+
+        # Cov_k = (1/Nk) sum resp (z-mu_old)(z-mu_old)^T - shift shift^T
+        #       = (1/Nk) sum resp (z-mu_new)(z-mu_new)^T.
+        outer = shift[:, :, None] * shift[:, None, :]              # (k, 2d, 2d)
+        covs = stats["dS2"] / Nk[:, None, None] - outer
         self.covariances_ = covs + self._reg(b, covs.shape[-1])
 
     def source_log_prob(self, b, X):
@@ -258,44 +333,56 @@ class CrossDiagCovariance(CovarianceModel):
         prec_xy = -cov_xy / (var_x * schur_D)
         return var_x, var_y, prec_x, prec_y, prec_xy, schur_D
 
-    def e_step(self, b, joint):
-        n, d = joint.shape
-        var_x, _, prec_x, prec_y, prec_xy, schur_D = self._precision(b)
+    def new_stats(self, b):
+        k, d = self.n_components, self.feature_dim
+        return {"n": 0, "ll": 0.0,
+                "Nk": b.zeros(k),               # sum_n resp                        (k,)
+                "dS1": b.zeros((k, 2 * d)),     # sum_n resp (z - mu)               (k, 2d)
+                "dZ2": b.zeros((k, 2 * d)),     # sum_n resp (z - mu)^2             (k, 2d)
+                "dXY": b.zeros((k, d))}         # sum_n resp (x-mu_x)(y-mu_y)       (k, d)
 
-        X_x, X_y = self._split(joint)
-        mu_x, mu_y = self._split(self.means_)
-        diff_x = X_x[:, None, :] - mu_x[None, :, :]                 # (n, k, d)
-        diff_y = X_y[:, None, :] - mu_y[None, :, :]
+    def _joint_mahalanobis(self, b, joint):
+        var_x, _, prec_x, prec_y, prec_xy, schur_D = self._precision(b)
+        diff = joint[:, None, :] - self.means_[None, :, :]         # (n, k, 2d)
+        diff_x, diff_y = self._split(diff)                         # (n, k, d) each
 
         mahal = (diff_x ** 2 * prec_x[None, :, :]).sum(axis=2)
         mahal = mahal + (diff_y ** 2 * prec_y[None, :, :]).sum(axis=2)
         mahal = mahal + 2 * (diff_x * diff_y * prec_xy[None, :, :]).sum(axis=2)
 
         log_det = b.log(var_x).sum(axis=1) + b.log(schur_D).sum(axis=1)   # (k,)
-        log_prob = -0.5 * (mahal + d * np.log(2 * np.pi) + log_det[None, :])
-        weighted = log_prob + b.log(self.weights_ + EPSILON)[None, :]
+        return mahal, log_det, diff
 
-        ll = b.logsumexp(weighted, axis=1)
-        resp = b.exp(weighted - ll[:, None])
-        return resp, ll.sum()
+    def accumulate(self, b, chunk, stats):
+        n, d = chunk.shape
+        mahal, log_det, diff = self._joint_mahalanobis(b, chunk)
+        resp, ll = self._responsibilities_and_ll(b, mahal, log_det, d)
+        diff_x, diff_y = self._split(diff)
 
-    def m_step(self, b, joint, resp):
-        n = joint.shape[0]
-        Nk = resp.sum(axis=0)
+        # Moments centered on the current means (reusing diff_x / diff_y); the
+        # concatenations act on the reduced (k, d) sums, not the (n, k, d) tensors.
+        stats["n"] += n
+        stats["ll"] += float(ll.sum())
+        stats["Nk"] += resp.sum(axis=0)
+        stats["dS1"] += b.concat([b.einsum("nk,nkf->kf", resp, diff_x),
+                                  b.einsum("nk,nkf->kf", resp, diff_y)], axis=1)
+        stats["dZ2"] += b.concat([b.einsum("nk,nkf->kf", resp, diff_x ** 2),
+                                  b.einsum("nk,nkf->kf", resp, diff_y ** 2)], axis=1)
+        stats["dXY"] += b.einsum("nk,nkf->kf", resp, diff_x * diff_y)
+
+    def update_from_stats(self, b, stats):
+        Nk = stats["Nk"]
         Nk_safe = b.clamp_min(Nk)
 
-        self.weights_ = Nk / n
-        self.means_ = b.einsum("nk,nf->kf", resp, joint) / Nk_safe[:, None]
+        self.weights_ = Nk / stats["n"]
+        shift = stats["dS1"] / Nk_safe[:, None]                    # (k, 2d): mu_new - mu_old
+        self.means_ = self.means_ + shift
 
-        X_x, X_y = self._split(joint)
-        mu_x, mu_y = self._split(self.means_)
-        diff_x = X_x[:, None, :] - mu_x[None, :, :]
-        diff_y = X_y[:, None, :] - mu_y[None, :, :]
-
-        var_x = (resp[:, :, None] * diff_x ** 2).sum(axis=0) / Nk_safe[:, None]
-        var_y = (resp[:, :, None] * diff_y ** 2).sum(axis=0) / Nk_safe[:, None]
-        self.diagonal_covariances_ = b.clamp_min(b.concat([var_x, var_y], axis=1))
-        self.cross_covariances_ = (resp[:, :, None] * diff_x * diff_y).sum(axis=0) / Nk_safe[:, None]
+        # Variance/cross around the new means, from sums centered on the old ones.
+        var = stats["dZ2"] / Nk_safe[:, None] - shift ** 2         # (k, 2d)
+        self.diagonal_covariances_ = b.clamp_min(var)
+        shift_x, shift_y = self._split(shift)
+        self.cross_covariances_ = stats["dXY"] / Nk_safe[:, None] - shift_x * shift_y
 
     def source_log_prob(self, b, X):
         mu_x, _ = self._split(self.means_)
@@ -355,34 +442,49 @@ class SharedCovariance(CovarianceModel):
         for k in empty:
             self.means_[k] = global_mean
 
-    def e_step(self, b, joint):
-        n, d = joint.shape
-        cov = self.covariance_ + self._reg(b, d)
-        inv_cov = b.inv(cov)                                         # (2d, 2d)
-        log_det = b.slogdet(cov)                                     # scalar
+    def new_stats(self, b):
+        k, d2 = self.n_components, 2 * self.feature_dim
+        return {"n": 0, "ll": 0.0,
+                "Nk": b.zeros(k),               # sum_n resp                        (k,)
+                "dS1": b.zeros((k, d2)),        # sum_n resp (z - mu_k)             (k, 2d)
+                "dS2": b.zeros((d2, d2))}       # sum_{n,k} resp (z-mu_k)(z-mu_k)^T (2d, 2d)
 
-        diff = joint[:, None, :] - self.means_[None, :, :]           # (n, k, 2d)
+    def _joint_mahalanobis(self, b, joint):
+        cov = self.covariance_ + self._reg(b, joint.shape[1])
+        inv_cov = b.inv(cov)                                        # (2d, 2d)
+        log_det = b.slogdet(cov)                                    # scalar
+
+        diff = joint[:, None, :] - self.means_[None, :, :]         # (n, k, 2d)
         temp = b.einsum("nkf,fg->nkg", diff, inv_cov)
-        mahal = b.einsum("nkf,nkf->nk", temp, diff)                  # (n, k)
+        mahal = b.einsum("nkf,nkf->nk", temp, diff)                # (n, k)
+        return mahal, log_det, diff
 
-        log_prob = -0.5 * (mahal + log_det + d * np.log(2 * np.pi))
-        weighted = log_prob + b.log(self.weights_ + EPSILON)[None, :]
+    def accumulate(self, b, chunk, stats):
+        n, d = chunk.shape
+        mahal, log_det, diff = self._joint_mahalanobis(b, chunk)
+        resp, ll = self._responsibilities_and_ll(b, mahal, log_det, d)
 
-        ll = b.logsumexp(weighted, axis=1)
-        resp = b.exp(weighted - ll[:, None])
-        return resp, ll.sum()
+        # Tied scatter, centered on the current means (reusing diff): the pooled
+        # sum stays well-scaled instead of subtracting two large Gram matrices.
+        dw = diff * (resp ** 0.5)[:, :, None]                      # (n, k, 2d)
+        stats["n"] += n
+        stats["ll"] += float(ll.sum())
+        stats["Nk"] += resp.sum(axis=0)
+        stats["dS1"] += b.einsum("nk,nkf->kf", resp, diff)
+        stats["dS2"] += b.einsum("nkf,nkg->fg", dw, dw)           # summed over k
 
-    def m_step(self, b, joint, resp):
-        n = joint.shape[0]
-        Nk = resp.sum(axis=0) + EPSILON                             # (k,)
+    def update_from_stats(self, b, stats):
+        Nk = stats["Nk"]
+        Nk_safe = b.clamp_min(Nk)
 
-        self.weights_ = Nk / n
-        self.means_ = b.einsum("nk,nf->kf", resp, joint) / Nk[:, None]
+        self.weights_ = Nk / stats["n"]
+        shift = stats["dS1"] / Nk_safe[:, None]                    # (k, 2d): mu_new - mu_old
+        self.means_ = self.means_ + shift
 
-        # Tied ML covariance: (1/N) sum_n sum_k resp[n,k] (z-mu_k)(z-mu_k)^T.
-        diff = joint[:, None, :] - self.means_[None, :, :]          # (n, k, 2d)
-        weighted_diff = diff * (resp ** 0.5)[:, :, None]
-        cov = b.einsum("nkf,nkg->fg", weighted_diff, weighted_diff) / n
+        # Tied ML covariance: pooled within-cluster scatter about the new means,
+        # (sum_{n,k} resp (z-mu_old)(z-mu_old)^T - sum_k Nk shift shift^T) / N.
+        mean_shift = b.einsum("k,kf,kg->fg", Nk_safe, shift, shift)
+        cov = (stats["dS2"] - mean_shift) / stats["n"]
         self.covariance_ = cov + self._reg(b, cov.shape[-1])
 
     def source_log_prob(self, b, X):

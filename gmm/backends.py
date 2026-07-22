@@ -42,6 +42,10 @@ class Backend:
         """Return a NumPy copy of a native array (for ``save_model``)."""
         raise NotImplementedError
 
+    def zeros(self, shape):
+        """Zero-filled native array of ``shape`` (for stat accumulators)."""
+        raise NotImplementedError
+
     # -- elementwise / reductions ------------------------------------------
     def log(self, x):
         raise NotImplementedError
@@ -120,6 +124,9 @@ class NumpyBackend(Backend):
 
     def to_numpy(self, x):
         return np.asarray(x)
+
+    def zeros(self, shape):
+        return np.zeros(shape)
 
     def log(self, x):
         return np.log(x)
@@ -210,6 +217,9 @@ class TorchBackend(Backend):
 
     def to_numpy(self, x):
         return x.detach().cpu().numpy()
+
+    def zeros(self, shape):
+        return torch.zeros(shape, device=self.device)
 
     def log(self, x):
         return torch.log(x)
